@@ -1,7 +1,7 @@
 let peer = null;
 let localStream = null;
 let dataConn = null;
-let myProfile = { name: "Anonymous", color: "#3b82f6" };
+let myName = "Anonymous";
 
 const entryScreen = document.getElementById('entry-screen');
 const callInterface = document.getElementById('call-interface');
@@ -10,71 +10,125 @@ const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
 const joinInput = document.getElementById('join-id');
 const joinBtn = document.getElementById('btn-join');
+const errorContainer = document.getElementById('error-container');
+const errorMsg = document.getElementById('error-msg');
 
-// Initialize Lucide Icons
 lucide.createIcons();
 
-// Join button validation logic
+// Join button activation
 joinInput.addEventListener('input', () => {
-    if (joinInput.value.length === 6) {
+    const val = joinInput.value.trim();
+    if (val.length === 6) {
         joinBtn.disabled = false;
-        joinBtn.classList.remove('bg-zinc-700', 'text-zinc-500');
-        joinBtn.classList.add('bg-blue-600', 'text-white', 'hover:bg-blue-700', 'active:scale-95');
+        joinBtn.classList.add('bg-blue-600', 'text-white');
     } else {
         joinBtn.disabled = true;
-        joinBtn.classList.add('bg-zinc-700', 'text-zinc-500');
-        joinBtn.classList.remove('bg-blue-600', 'text-white', 'hover:bg-blue-700', 'active:scale-95');
+        joinBtn.classList.remove('bg-blue-600', 'text-white');
     }
 });
 
-/**
- * Initialize Media and Peer Connection
- */
-async function startApp(peerId) {
-    const nameInput = document.getElementById('user-name').value.trim();
-    if (nameInput) myProfile.name = nameInput;
-    
-    document.getElementById('local-display-name').innerText = myProfile.name;
-    document.getElementById('local-avatar').innerText = myProfile.name.charAt(0).toUpperCase();
+function showError(text) {
+    errorMsg.innerText = text;
+    errorContainer.classList.remove('hidden');
+    joinBtn.innerHTML = "Join"; // Reset button text if it was loading
+    joinBtn.disabled = false;
+}
+
+/** * INITIALIZE APP 
+ * @param {string} targetId - If provided, we are creating a meeting with this ID.
+ * @param {boolean} isJoining - If true, we are looking for an existing ID.
+ **/
+async function startFlux(targetId, isJoining = false) {
+    errorContainer.classList.add('hidden');
+    const inputName = document.getElementById('user-name').value.trim();
+    if (inputName) myName = inputName; // Preserves Capitals
 
     try {
+        // 1. Get Camera
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         document.getElementById('local-video').srcObject = localStream;
-        
-        peer = peerId ? new Peer(peerId) : new Peer();
-        
+        document.getElementById('local-display-name').innerText = myName;
+
+        // 2. Initialize Peer
+        // If joining, we get a random ID. If creating, we use the 6-digit code.
+        peer = isJoining ? new Peer() : new Peer(targetId);
+
         peer.on('open', (id) => {
-            document.getElementById('display-code').innerText = id;
-            if (!peerId) connectToPeer(joinInput.value.toUpperCase());
-            showCallUI();
+            if (isJoining) {
+                // If we are joining, attempt to connect to the target
+                attemptConnection(targetId);
+            } else {
+                // If we are creating, just wait for others
+                document.getElementById('display-code').innerText = id;
+                showCallUI();
+            }
         });
 
-        peer.on('call', call => {
+        // 3. Listen for Incoming (For the Host)
+        peer.on('call', (call) => {
             call.answer(localStream);
-            call.on('stream', stream => document.getElementById('remote-video').srcObject = stream);
+            call.on('stream', (remoteStream) => {
+                document.getElementById('remote-video').srcObject = remoteStream;
+                document.getElementById('waiting-overlay').classList.add('hidden');
+            });
         });
 
-        peer.on('connection', conn => setupDataConnection(conn));
+        peer.on('connection', (conn) => {
+            dataConn = conn;
+            setupDataHandlers();
+        });
 
-    } catch (err) { 
-        console.error(err);
-        alert("Camera and microphone access are required for Flux."); 
+        peer.on('error', (err) => {
+            console.error("Peer Error:", err.type);
+            if (err.type === 'peer-not-found') showError("Wrong code. Meeting not found.");
+            else if (err.type === 'unavailable-id') showError("Code in use. Try again.");
+            else showError("Connection error. Try again.");
+        });
+
+    } catch (err) {
+        showError("Camera/Mic access denied.");
     }
 }
 
-/**
- * Setup Data Connection for Chat and Identity
- */
-function setupDataConnection(conn) {
-    dataConn = conn;
-    dataConn.on('open', () => {
-        dataConn.send({ type: 'identity', name: myProfile.name, color: myProfile.color });
+/** * TRY TO CONNECT (For the Guest)
+ **/
+function attemptConnection(code) {
+    // Attempt Data Connection first to verify peer exists
+    const conn = peer.connect(code);
+    
+    conn.on('open', () => {
+        dataConn = conn;
+        setupDataHandlers();
+        
+        // If data opens, start the video call
+        const call = peer.call(code, localStream);
+        call.on('stream', (remoteStream) => {
+            document.getElementById('remote-video').srcObject = remoteStream;
+            document.getElementById('waiting-overlay').classList.add('hidden');
+        });
+
+        document.getElementById('display-code').innerText = code;
+        showCallUI();
     });
 
-    dataConn.on('data', data => {
+    // Timeout if peer doesn't respond
+    setTimeout(() => {
+        if (!dataConn) showError("Wrong code or meeting ended.");
+    }, 5000);
+}
+
+/** * CHAT & IDENTITY LOGIC 
+ **/
+function setupDataHandlers() {
+    // Send our name to the other person immediately
+    dataConn.on('open', () => {
+        dataConn.send({ type: 'identity', name: myName });
+    });
+
+    dataConn.on('data', (data) => {
         if (data.type === 'identity') {
             document.getElementById('remote-display-name').innerText = data.name;
-            document.getElementById('remote-status-dot').style.backgroundColor = data.color;
+            document.getElementById('remote-status-dot').classList.replace('bg-zinc-500', 'bg-blue-500');
             document.getElementById('waiting-overlay').classList.add('hidden');
         } else if (data.type === 'chat') {
             appendMessage(data.name, data.text, false);
@@ -82,18 +136,6 @@ function setupDataConnection(conn) {
     });
 }
 
-/**
- * Initiate call and data connection to a peer
- */
-function connectToPeer(id) {
-    const call = peer.call(id, localStream);
-    call.on('stream', stream => document.getElementById('remote-video').srcObject = stream);
-    setupDataConnection(peer.connect(id));
-}
-
-/**
- * Update Chat UI
- */
 function appendMessage(sender, text, isMine) {
     const msgDiv = document.createElement('div');
     msgDiv.className = `flex flex-col ${isMine ? 'items-end' : 'items-start'}`;
@@ -105,20 +147,16 @@ function appendMessage(sender, text, isMine) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-// Chat Form Submission
 chatForm.onsubmit = (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
     if (text && dataConn) {
-        dataConn.send({ type: 'chat', name: myProfile.name, text: text });
+        dataConn.send({ type: 'chat', name: myName, text: text });
         appendMessage("You", text, true);
         chatInput.value = '';
     }
 };
 
-/**
- * Switch from setup screen to call interface
- */
 function showCallUI() {
     entryScreen.classList.add('hidden');
     callInterface.classList.remove('hidden');
@@ -126,13 +164,18 @@ function showCallUI() {
     lucide.createIcons();
 }
 
-// Button Listeners
+// Button Events
 document.getElementById('btn-create').onclick = () => {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    startApp(code);
+    startFlux(code, false);
 };
 
-document.getElementById('btn-join').onclick = () => startApp();
+document.getElementById('btn-join').onclick = () => {
+    const code = joinInput.value.trim().toUpperCase();
+    joinBtn.innerHTML = "Connecting...";
+    joinBtn.disabled = true;
+    startFlux(code, true);
+};
 
 document.getElementById('btn-hangup').onclick = () => window.location.reload();
 
@@ -150,6 +193,5 @@ document.getElementById('toggle-video').onclick = function() {
     video.enabled = !video.enabled;
     this.classList.toggle('active-off', !video.enabled);
     this.innerHTML = `<i data-lucide="${video.enabled ? 'video' : 'video-off'}"></i>`;
-    document.getElementById('local-muted-overlay').classList.toggle('hidden', video.enabled);
     lucide.createIcons();
 };
