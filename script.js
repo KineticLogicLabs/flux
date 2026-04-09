@@ -1,7 +1,8 @@
 let peer = null;
 let localStream = null;
 let dataConn = null;
-let myName = "Anonymous";
+let myName = "User";
+let remoteName = "User 2";
 
 const entryScreen = document.getElementById('entry-screen');
 const callInterface = document.getElementById('call-interface');
@@ -30,41 +31,42 @@ joinInput.addEventListener('input', () => {
 function showError(text) {
     errorMsg.innerText = text;
     errorContainer.classList.remove('hidden');
-    joinBtn.innerHTML = "Join"; // Reset button text if it was loading
+    joinBtn.innerHTML = "Join";
     joinBtn.disabled = false;
 }
 
 /** * INITIALIZE APP 
- * @param {string} targetId - If provided, we are creating a meeting with this ID.
- * @param {boolean} isJoining - If true, we are looking for an existing ID.
  **/
 async function startFlux(targetId, isJoining = false) {
     errorContainer.classList.add('hidden');
     const inputName = document.getElementById('user-name').value.trim();
-    if (inputName) myName = inputName; // Preserves Capitals
+    
+    // Naming Logic: Default to User or User 2
+    if (isJoining) {
+        myName = inputName || "User 2";
+        remoteName = "User";
+    } else {
+        myName = inputName || "User";
+        remoteName = "User 2";
+    }
 
     try {
-        // 1. Get Camera
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         document.getElementById('local-video').srcObject = localStream;
         document.getElementById('local-display-name').innerText = myName;
 
-        // 2. Initialize Peer
-        // If joining, we get a random ID. If creating, we use the 6-digit code.
+        // Peer initialization
         peer = isJoining ? new Peer() : new Peer(targetId);
 
         peer.on('open', (id) => {
             if (isJoining) {
-                // If we are joining, attempt to connect to the target
                 attemptConnection(targetId);
             } else {
-                // If we are creating, just wait for others
                 document.getElementById('display-code').innerText = id;
                 showCallUI();
             }
         });
 
-        // 3. Listen for Incoming (For the Host)
         peer.on('call', (call) => {
             call.answer(localStream);
             call.on('stream', (remoteStream) => {
@@ -79,10 +81,9 @@ async function startFlux(targetId, isJoining = false) {
         });
 
         peer.on('error', (err) => {
-            console.error("Peer Error:", err.type);
             if (err.type === 'peer-not-found') showError("Wrong code. Meeting not found.");
             else if (err.type === 'unavailable-id') showError("Code in use. Try again.");
-            else showError("Connection error. Try again.");
+            else showError("Connection error.");
         });
 
     } catch (err) {
@@ -90,50 +91,80 @@ async function startFlux(targetId, isJoining = false) {
     }
 }
 
-/** * TRY TO CONNECT (For the Guest)
+/** * CONNECT LOGIC (Guest)
  **/
 function attemptConnection(code) {
-    // Attempt Data Connection first to verify peer exists
     const conn = peer.connect(code);
     
     conn.on('open', () => {
         dataConn = conn;
         setupDataHandlers();
         
-        // If data opens, start the video call
         const call = peer.call(code, localStream);
         call.on('stream', (remoteStream) => {
             document.getElementById('remote-video').srcObject = remoteStream;
             document.getElementById('waiting-overlay').classList.add('hidden');
         });
 
+        // Ensure guest sees the 6-digit code, not their own Peer ID
         document.getElementById('display-code').innerText = code;
         showCallUI();
     });
 
-    // Timeout if peer doesn't respond
     setTimeout(() => {
         if (!dataConn) showError("Wrong code or meeting ended.");
     }, 5000);
 }
 
-/** * CHAT & IDENTITY LOGIC 
+/** * DATA & STATUS LOGIC
  **/
 function setupDataHandlers() {
-    // Send our name to the other person immediately
     dataConn.on('open', () => {
-        dataConn.send({ type: 'identity', name: myName });
+        sendStatusUpdate();
     });
 
     dataConn.on('data', (data) => {
-        if (data.type === 'identity') {
+        if (data.type === 'status') {
+            // Update remote name and icons
             document.getElementById('remote-display-name').innerText = data.name;
-            document.getElementById('remote-status-dot').classList.replace('bg-zinc-500', 'bg-blue-500');
+            updateStatusIcons('remote', data.mic, data.vid);
             document.getElementById('waiting-overlay').classList.add('hidden');
         } else if (data.type === 'chat') {
             appendMessage(data.name, data.text, false);
         }
     });
+}
+
+function sendStatusUpdate() {
+    if (!dataConn || !dataConn.open) return;
+    const micActive = localStream.getAudioTracks()[0].enabled;
+    const vidActive = localStream.getVideoTracks()[0].enabled;
+    
+    // Update local icons immediately
+    updateStatusIcons('local', micActive, vidActive);
+
+    // Send to peer
+    dataConn.send({
+        type: 'status',
+        name: myName,
+        mic: micActive,
+        vid: vidActive
+    });
+}
+
+function updateStatusIcons(prefix, micActive, vidActive) {
+    const micIcon = document.getElementById(`status-mic-${prefix}`);
+    const vidIcon = document.getElementById(`status-vid-${prefix}`);
+    
+    // Toggle Mic Icon
+    micIcon.setAttribute('data-lucide', micActive ? 'mic' : 'mic-off');
+    micIcon.style.color = micActive ? 'white' : '#ef4444'; // white or red
+
+    // Toggle Vid Icon
+    vidIcon.setAttribute('data-lucide', vidActive ? 'video' : 'video-off');
+    vidIcon.style.color = vidActive ? 'white' : '#ef4444';
+
+    lucide.createIcons();
 }
 
 function appendMessage(sender, text, isMine) {
@@ -164,7 +195,7 @@ function showCallUI() {
     lucide.createIcons();
 }
 
-// Button Events
+// Event Listeners
 document.getElementById('btn-create').onclick = () => {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     startFlux(code, false);
@@ -179,19 +210,18 @@ document.getElementById('btn-join').onclick = () => {
 
 document.getElementById('btn-hangup').onclick = () => window.location.reload();
 
-// Controls
 document.getElementById('toggle-mic').onclick = function() {
-    const audio = localStream.getAudioTracks()[0];
-    audio.enabled = !audio.enabled;
-    this.classList.toggle('active-off', !audio.enabled);
-    this.innerHTML = `<i data-lucide="${audio.enabled ? 'mic' : 'mic-off'}"></i>`;
-    lucide.createIcons();
+    const track = localStream.getAudioTracks()[0];
+    track.enabled = !track.enabled;
+    this.classList.toggle('active-off', !track.enabled);
+    this.innerHTML = `<i data-lucide="${track.enabled ? 'mic' : 'mic-off'}"></i>`;
+    sendStatusUpdate();
 };
 
 document.getElementById('toggle-video').onclick = function() {
-    const video = localStream.getVideoTracks()[0];
-    video.enabled = !video.enabled;
-    this.classList.toggle('active-off', !video.enabled);
-    this.innerHTML = `<i data-lucide="${video.enabled ? 'video' : 'video-off'}"></i>`;
-    lucide.createIcons();
+    const track = localStream.getVideoTracks()[0];
+    track.enabled = !track.enabled;
+    this.classList.toggle('active-off', !track.enabled);
+    this.innerHTML = `<i data-lucide="${track.enabled ? 'video' : 'video-off'}"></i>`;
+    sendStatusUpdate();
 };
