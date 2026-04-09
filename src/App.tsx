@@ -38,7 +38,9 @@ interface Message {
 
 interface StatusData {
   type: 'status';
+  peerId: string;
   name: string;
+  color: string;
   mic: boolean;
   vid: boolean;
 }
@@ -49,7 +51,64 @@ interface ChatData {
   text: string;
 }
 
-type PeerData = StatusData | ChatData;
+interface PeerListData {
+  type: 'peer-list';
+  peers: string[];
+}
+
+interface EndMeetingData {
+  type: 'end-meeting';
+}
+
+type PeerData = StatusData | ChatData | PeerListData | EndMeetingData;
+
+interface Participant {
+  peerId: string;
+  name: string;
+  color: string;
+  mic: boolean;
+  vid: boolean;
+}
+
+const RemoteVideo = ({ stream, participant }: { stream: MediaStream, participant?: Participant, key?: string }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  const isActive = participant ? participant.vid : true;
+
+  return (
+    <div className="relative bg-zinc-800 rounded-2xl overflow-hidden border border-zinc-700 bg-sidebar border-theme aspect-[4/3] flex items-center justify-center">
+      <video 
+        ref={videoRef}
+        className={`w-full h-full object-cover ${!isActive ? 'hidden' : ''}`} 
+        autoPlay 
+        playsInline 
+        onLoadedMetadata={(e) => (e.target as HTMLVideoElement).play().catch(err => console.error("Remote play failed", err))}
+      />
+      {!isActive && (
+        <div className="absolute inset-0 flex items-center justify-center bg-zinc-700">
+          <div 
+            className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold text-white shadow-xl"
+            style={{ backgroundColor: participant?.color || '#2563eb' }}
+          >
+            {participant?.name.charAt(0).toUpperCase() || '?'}
+          </div>
+        </div>
+      )}
+      <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10">
+        <span className="text-xs font-medium text-white">{participant?.name || 'Remote User'}</span>
+        <div className="flex gap-1.5 border-l border-white/20 pl-2">
+          {participant?.mic ? <Mic className="w-3 h-3 text-white" /> : <MicOff className="w-3 h-3 text-red-500" />}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export default function App() {
   const [inCall, setInCall] = useState(false);
@@ -58,22 +117,23 @@ export default function App() {
   const [meetingId, setMeetingId] = useState('------');
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isHost, setIsHost] = useState(false);
   
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+  const [participants, setParticipants] = useState<Record<string, Participant>>({});
+  
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatInput, setChatInput] = useState('');
   
   const [myName, setMyName] = useState('User');
-  const [remoteName, setRemoteName] = useState('Waiting...');
   
   const [micActive, setMicActive] = useState(true);
   const [vidActive, setVidActive] = useState(true);
-  const [remoteMicActive, setRemoteMicActive] = useState(true);
-  const [remoteVidActive, setRemoteVidActive] = useState(true);
-  const [isWaiting, setIsWaiting] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showParticipants, setShowParticipants] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(window.innerWidth >= 1024);
   const [profileColor, setProfileColor] = useState('#2563eb');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [showTimestamps, setShowTimestamps] = useState(false);
@@ -87,11 +147,10 @@ export default function App() {
   const [tempSound, setTempSound] = useState(soundEnabled);
 
   const peerRef = useRef<Peer | null>(null);
-  const dataConnRef = useRef<DataConnection | null>(null);
-  const mediaCallRef = useRef<MediaConnection | null>(null);
+  const connectionsRef = useRef<Record<string, DataConnection>>({});
+  const callsRef = useRef<Record<string, MediaConnection>>({});
   const screenStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -152,37 +211,51 @@ export default function App() {
   }, [localStream]);
 
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-    }
-  }, [remoteStream]);
-
-  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const broadcast = (data: PeerData) => {
+    Object.values(connectionsRef.current).forEach((conn: DataConnection) => {
+      if (conn.open) {
+        conn.send(data);
+      }
+    });
+  };
+
   const sendStatusUpdate = (mic: boolean, vid: boolean, nameOverride?: string) => {
-    if (dataConnRef.current?.open) {
-      dataConnRef.current.send({
-        type: 'status',
-        name: nameOverride || myName,
-        mic,
-        vid
-      });
-    }
+    broadcast({
+      type: 'status',
+      peerId: peerRef.current?.id || '',
+      name: nameOverride || myName,
+      color: profileColor,
+      mic,
+      vid
+    });
   };
 
   const setupDataHandlers = (conn: DataConnection) => {
-    dataConnRef.current = conn;
+    const peerId = conn.peer;
+    connectionsRef.current[peerId] = conn;
     
     const onOpen = () => {
       // Send initial status
       conn.send({
         type: 'status',
+        peerId: peerRef.current?.id || '',
         name: myName,
+        color: profileColor,
         mic: micActive,
         vid: vidActive
       });
+
+      // If I'm the host, send the list of other peers to the new joiner
+      if (isHost) {
+        const otherPeers = Object.keys(connectionsRef.current).filter(id => id !== peerId);
+        conn.send({
+          type: 'peer-list',
+          peers: otherPeers
+        });
+      }
     };
 
     if (conn.open) {
@@ -194,10 +267,16 @@ export default function App() {
     conn.on('data', (data: any) => {
       const peerData = data as PeerData;
       if (peerData.type === 'status') {
-        setRemoteName(peerData.name);
-        setRemoteMicActive(peerData.mic);
-        setRemoteVidActive(peerData.vid);
-        setIsWaiting(false);
+        setParticipants(prev => ({
+          ...prev,
+          [peerData.peerId]: {
+            peerId: peerData.peerId,
+            name: peerData.name,
+            color: peerData.color,
+            mic: peerData.mic,
+            vid: peerData.vid
+          }
+        }));
       } else if (peerData.type === 'chat') {
         setMessages(prev => [...prev, { 
           sender: peerData.name, 
@@ -205,17 +284,69 @@ export default function App() {
           isMine: false,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }]);
+      } else if (peerData.type === 'peer-list') {
+        // As a joiner, I received a list of other peers from the host. Connect to them.
+        peerData.peers.forEach(id => {
+          if (!connectionsRef.current[id]) {
+            connectToPeer(id, localStream);
+          }
+        });
+      } else if (peerData.type === 'end-meeting') {
+        handleHangup(true);
       }
     });
 
     conn.on('close', () => {
-      handleHangup();
+      removePeer(peerId);
+    });
+  };
+
+  const removePeer = (peerId: string) => {
+    delete connectionsRef.current[peerId];
+    delete callsRef.current[peerId];
+    setRemoteStreams(prev => {
+      const next = { ...prev };
+      delete next[peerId];
+      return next;
+    });
+    setParticipants(prev => {
+      const next = { ...prev };
+      delete next[peerId];
+      return next;
+    });
+    playSound('disconnect');
+  };
+
+  const connectToPeer = (targetId: string, stream: MediaStream | null) => {
+    if (!peerRef.current || connectionsRef.current[targetId]) return;
+
+    const conn = peerRef.current.connect(targetId);
+    setupDataHandlers(conn);
+    
+    const call = peerRef.current.call(targetId, stream || new MediaStream());
+    setupCallHandlers(call);
+  };
+
+  const setupCallHandlers = (call: MediaConnection) => {
+    const peerId = call.peer;
+    callsRef.current[peerId] = call;
+
+    call.on('stream', (remoteStream) => {
+      setRemoteStreams(prev => ({
+        ...prev,
+        [peerId]: remoteStream
+      }));
+    });
+
+    call.on('close', () => {
+      removePeer(peerId);
     });
   };
 
   const startFlux = async (targetId: string, isJoining: boolean) => {
     setError(null);
     setIsConnecting(true);
+    setIsHost(!isJoining);
     
     const finalMyName = userName.trim() || (isJoining ? "User 2" : "User");
     setMyName(finalMyName);
@@ -238,7 +369,10 @@ export default function App() {
 
     peer.on('open', (id) => {
       if (isJoining) {
-        attemptConnection(targetId, stream);
+        connectToPeer(targetId, stream);
+        setMeetingId(targetId);
+        setInCall(true);
+        setIsConnecting(false);
       } else {
         setMeetingId(id);
         setInCall(true);
@@ -247,13 +381,8 @@ export default function App() {
     });
 
     peer.on('call', (call) => {
-      mediaCallRef.current = call;
-      // Answer with local stream if available, otherwise answer without sending media
       call.answer(stream || undefined);
-      call.on('stream', (remoteStream) => {
-        setRemoteStream(remoteStream);
-        setIsWaiting(false);
-      });
+      setupCallHandlers(call);
     });
 
     peer.on('connection', (conn) => {
@@ -268,35 +397,6 @@ export default function App() {
     });
   };
 
-  const attemptConnection = (code: string, stream: MediaStream | null) => {
-    if (!peerRef.current) return;
-
-    const conn = peerRef.current.connect(code);
-    
-    conn.on('open', () => {
-      setupDataHandlers(conn);
-      
-      // Initiate call to receive remote stream, even if we don't have a local stream
-      const call = peerRef.current!.call(code, stream || new MediaStream());
-      mediaCallRef.current = call;
-      call.on('stream', (remoteStream) => {
-        setRemoteStream(remoteStream);
-        setIsWaiting(false);
-      });
-
-      setMeetingId(code);
-      setInCall(true);
-      setIsConnecting(false);
-    });
-
-    setTimeout(() => {
-      if (!dataConnRef.current) {
-        setError("Wrong code or meeting ended.");
-        setIsConnecting(false);
-      }
-    }, 5000);
-  };
-
   const handleCreate = () => {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     startFlux(code, false);
@@ -308,11 +408,26 @@ export default function App() {
     }
   };
 
-  const handleHangup = () => {
+  const handleHangup = (force: boolean = false) => {
+    if (!force && isHost) {
+      broadcast({ type: 'end-meeting' });
+    }
+    
     playSound('disconnect');
     localStream?.getTracks().forEach(track => track.stop());
     peerRef.current?.destroy();
-    setTimeout(() => window.location.reload(), 500);
+    
+    // Reset state instead of reload for smoother transition
+    setInCall(false);
+    setRemoteStreams({});
+    setParticipants({});
+    setMessages([]);
+    setMeetingDuration(0);
+    setIsHost(false);
+    connectionsRef.current = {};
+    callsRef.current = {};
+    
+    setTimeout(() => window.location.reload(), 100);
   };
 
   const toggleMic = () => {
@@ -350,18 +465,13 @@ export default function App() {
 
         const videoTrack = stream.getVideoTracks()[0];
         
-        // Update local video
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-
-        // Replace track in active call
-        if (mediaCallRef.current) {
-          const sender = mediaCallRef.current.peerConnection.getSenders().find(s => s.track?.kind === 'video');
+        // Replace track in all active calls
+        Object.values(callsRef.current).forEach((call: MediaConnection) => {
+          const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'video');
           if (sender) {
             sender.replaceTrack(videoTrack);
           }
-        }
+        });
 
         videoTrack.onended = () => {
           stopScreenShare();
@@ -382,15 +492,14 @@ export default function App() {
     setIsScreenSharing(false);
 
     // Restore local camera stream
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
+    if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
-      if (mediaCallRef.current && videoTrack) {
-        const sender = mediaCallRef.current.peerConnection.getSenders().find(s => s.track?.kind === 'video');
+      Object.values(callsRef.current).forEach((call: MediaConnection) => {
+        const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'video');
         if (sender) {
           sender.replaceTrack(videoTrack);
         }
-      }
+      });
     }
   };
 
@@ -398,9 +507,7 @@ export default function App() {
     e.preventDefault();
     if (chatInput.trim()) {
       const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      if (dataConnRef.current?.open) {
-        dataConnRef.current.send({ type: 'chat', name: myName, text: chatInput.trim() });
-      }
+      broadcast({ type: 'chat', name: myName, text: chatInput.trim() });
       setMessages(prev => [...prev, { 
         sender: "You", 
         text: chatInput.trim(), 
@@ -412,7 +519,7 @@ export default function App() {
   };
 
   return (
-    <div className={`font-sans h-screen flex flex-col overflow-hidden bg-main text-primary`} data-theme={theme}>
+    <div className={`bg-zinc-900 text-white font-sans h-screen flex flex-col overflow-hidden bg-main text-primary`} data-theme={theme}>
       <AnimatePresence>
         {error && (
           <motion.div 
@@ -430,27 +537,27 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-footer"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950 px-4 bg-footer"
           >
-            <div className="max-w-md w-full p-8 rounded-2xl shadow-2xl bg-sidebar border border-theme">
+            <div className="max-w-md w-full bg-zinc-900 p-8 rounded-2xl border border-zinc-800 shadow-2xl bg-sidebar border-theme">
               <div className="flex flex-col items-center mb-10">
-                <h1 className="text-5xl font-black tracking-tight text-center bg-gradient-to-br from-white to-secondary bg-clip-text text-transparent">Flux</h1>
-                <p className="text-secondary text-sm mt-2">Online video meeting</p>
+                <h1 className="text-5xl font-black tracking-tight text-center bg-gradient-to-br from-white to-zinc-500 bg-clip-text text-transparent">Flux</h1>
+                <p className="text-zinc-500 text-sm mt-2">Online video meeting</p>
               </div>
               
               <div className="space-y-6">
                 <div>
-                  <label className="block text-xs font-semibold text-secondary uppercase mb-2 ml-1">Display Name</label>
+                  <label className="block text-xs font-semibold text-zinc-500 uppercase mb-2 ml-1">Display Name</label>
                   <input 
                     type="text" 
                     value={userName}
                     onChange={(e) => setUserName(e.target.value)}
                     placeholder="User" 
-                    className="w-full border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all bg-main border-theme text-primary"
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   />
                 </div>
 
-                <div className="pt-4 border-t border-theme">
+                <div className="pt-4 border-t border-zinc-800">
                   <button 
                     onClick={handleCreate}
                     disabled={isConnecting}
@@ -460,8 +567,8 @@ export default function App() {
                   </button>
                   
                   <div className="relative flex items-center py-4">
-                    <div className="flex-grow border-t border-theme"></div>
-                    <span className="flex-shrink mx-4 text-secondary text-[10px] uppercase tracking-[0.2em] font-black">or</span>
+                    <div className="flex-grow border-t border-zinc-800"></div>
+                    <span className="flex-shrink mx-4 text-zinc-600 text-[10px] uppercase tracking-[0.2em] font-black">or</span>
                     <div className="flex-grow border-t border-zinc-800"></div>
                   </div>
 
@@ -472,12 +579,12 @@ export default function App() {
                       value={joinId}
                       onChange={(e) => setJoinId(e.target.value.toUpperCase())}
                       placeholder="6-digit code" 
-                      className="flex-1 border rounded-xl px-4 py-3 text-center font-mono uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all bg-main border-theme text-primary"
+                      className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-center font-mono uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                     />
                     <button 
                       onClick={handleJoin}
                       disabled={joinId.length !== 6 || isConnecting}
-                      className={`px-6 rounded-xl font-semibold transition-all ${joinId.length === 6 ? 'bg-blue-600 text-white' : 'bg-footer text-secondary border border-theme'}`}
+                      className={`px-6 rounded-xl font-semibold transition-all ${joinId.length === 6 ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-600'}`}
                     >
                       {isConnecting && joinId ? <Loader2 className="w-4 h-4 animate-spin" /> : "Join"}
                     </button>
@@ -491,11 +598,16 @@ export default function App() {
 
       {inCall && (
         <>
-          <main className="flex-1 flex p-4 gap-4 overflow-hidden">
-            <div className="flex-1 flex flex-col gap-4">
-              <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Local */}
-                <div className="relative rounded-2xl overflow-hidden bg-sidebar border border-theme">
+          <main className="flex-1 flex flex-col md:flex-row p-4 gap-4 overflow-hidden relative">
+            <div className="flex-1 flex flex-col gap-4 min-h-0">
+              <div className={`grid gap-4 w-full h-full content-center justify-center ${
+                Object.keys(remoteStreams).length === 0 ? 'max-w-2xl mx-auto grid-cols-1' :
+                Object.keys(remoteStreams).length === 1 ? 'max-w-5xl mx-auto grid-cols-1 md:grid-cols-2' :
+                Object.keys(remoteStreams).length <= 3 ? 'grid-cols-1 md:grid-cols-2' :
+                'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
+              }`}>
+                {/* Local Video */}
+                <div className="relative bg-zinc-800 rounded-2xl overflow-hidden border border-zinc-700 bg-sidebar border-theme aspect-[4/3] flex items-center justify-center w-full">
                   <video 
                     ref={localVideoRef}
                     className={`w-full h-full object-cover mirror ${!vidActive ? 'hidden' : ''}`} 
@@ -511,108 +623,108 @@ export default function App() {
                     </div>
                   )}
                   <div className="absolute bottom-4 left-4 bg-black/60 px-3 py-1.5 rounded-lg text-sm flex items-center gap-3 backdrop-blur-md border border-white/10 text-white">
-                    <span>{myName}</span>
+                    <span>{myName} (You)</span>
                     <div className="flex gap-1.5 border-l border-white/20 pl-2">
                       {micActive ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5 text-red-500" />}
-                      {vidActive ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5 text-red-500" />}
                     </div>
                   </div>
                 </div>
 
-                {/* Remote */}
-                <div className="relative rounded-2xl overflow-hidden bg-sidebar border border-theme">
-                  <video 
-                    ref={remoteVideoRef}
-                    className={`w-full h-full object-cover ${!remoteVidActive ? 'hidden' : ''}`} 
-                    autoPlay 
-                    playsInline 
-                    onLoadedMetadata={(e) => (e.target as HTMLVideoElement).play().catch(err => console.error("Remote play failed", err))}
+                {/* Remote Videos */}
+                {Object.entries(remoteStreams).map(([peerId, stream]) => (
+                  <RemoteVideo 
+                    key={peerId} 
+                    stream={stream as MediaStream} 
+                    participant={participants[peerId]} 
                   />
-                  {!remoteVidActive && !isWaiting && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-footer">
-                      <div className="w-24 h-24 rounded-full bg-sidebar flex items-center justify-center border border-theme">
-                        <span className="text-4xl font-black text-white">{remoteName.charAt(0).toUpperCase()}</span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="absolute bottom-4 left-4 bg-black/60 px-3 py-1.5 rounded-lg text-sm flex items-center gap-3 backdrop-blur-md border border-white/10 text-white">
-                    <span>{remoteName}</span>
-                    {!isWaiting && (
-                      <div className="flex gap-1.5 border-l border-white/20 pl-2">
-                        {remoteMicActive ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5 text-red-500" />}
-                        {remoteVidActive ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5 text-red-500" />}
-                      </div>
-                    )}
-                  </div>
-                  {isWaiting && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-main">
-                      <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
-                      <p className="mt-4 text-sm font-medium text-secondary">Waiting for partner...</p>
-                    </div>
-                  )}
-                </div>
+                ))}
               </div>
             </div>
 
             {/* Sidebar */}
-            <aside className="w-80 flex flex-col gap-4">
-              <div className="rounded-2xl p-4 shadow-xl bg-sidebar border border-theme flex justify-between items-start">
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest text-secondary font-bold mb-1 block">Meeting ID</label>
-                  <div className="text-2xl font-mono font-black text-blue-400 tracking-tighter">{meetingId}</div>
-                </div>
-                <div className="text-right">
-                  <label className="text-[10px] uppercase tracking-widest text-secondary font-bold mb-1 block">Duration</label>
-                  <div className="text-xl font-mono font-bold text-blue-500">{formatDuration(meetingDuration)}</div>
-                </div>
-              </div>
-
-              <div className="flex-1 rounded-2xl flex flex-col shadow-xl overflow-hidden bg-sidebar border border-theme">
-                <div className="p-4 border-b border-theme">
-                  <h2 className="font-bold flex items-center gap-2 text-primary">
-                    <MessageSquare className="w-4 h-4 text-blue-500" /> Chat
-                  </h2>
-                </div>
-                <div 
-                  className="flex-1 overflow-y-auto p-4 space-y-4 cursor-pointer"
-                  onClick={() => setShowTimestamps(!showTimestamps)}
+            <AnimatePresence>
+              {showSidebar && (
+                <motion.aside 
+                  initial={{ x: 320, opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  exit={{ x: 320, opacity: 0 }}
+                  transition={{ type: 'tween', ease: 'easeInOut', duration: 0.3 }}
+                  className="fixed inset-y-0 right-0 z-40 w-full sm:w-80 bg-zinc-900 border-l border-zinc-800 flex flex-col gap-4 p-4 md:relative md:inset-auto md:border-l-0 md:p-0 md:bg-transparent md:z-0 md:w-80 h-full"
                 >
-                  {messages.map((msg, i) => (
-                    <div key={i} className={`flex flex-col ${msg.isMine ? 'items-end' : 'items-start'}`}>
-                      <div className="flex items-center gap-2 mb-1 px-1">
-                        <span className="text-[10px] text-secondary font-bold">{msg.sender}</span>
-                        {showTimestamps && <span className="text-[8px] text-secondary font-medium opacity-70">{msg.timestamp}</span>}
-                      </div>
-                      <div 
-                        className={`chat-bubble ${msg.isMine ? 'chat-mine' : 'chat-theirs'}`}
-                        style={msg.isMine ? { backgroundColor: profileColor } : {}}
+                  <div className="bg-zinc-800 rounded-2xl border border-zinc-700 p-4 shadow-xl bg-sidebar border-theme flex justify-between items-start">
+                    <div>
+                      <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1 block text-secondary">Meeting ID</label>
+                      <div className="text-2xl font-mono font-black text-blue-400 tracking-tighter">{meetingId}</div>
+                    </div>
+                    <div className="flex flex-col items-end gap-2">
+                      <button 
+                        onClick={() => setShowSidebar(false)}
+                        className="p-1 hover:bg-zinc-700 rounded-md transition-colors md:hidden"
                       >
-                        {msg.text}
+                        <X className="w-4 h-4" />
+                      </button>
+                      <div className="text-right">
+                        <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1 block text-secondary">Duration</label>
+                        <div className="text-xl font-mono font-bold text-blue-500">{formatDuration(meetingDuration)}</div>
                       </div>
                     </div>
-                  ))}
-                  <div ref={chatEndRef} />
-                </div>
-                <div className="p-4 bg-footer border-t border-theme">
-                  <form onSubmit={handleSendMessage} className="flex gap-2">
-                    <input 
-                      type="text" 
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="Message..." 
-                      className="flex-1 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 bg-main border border-theme text-primary"
-                    />
-                    <button type="submit" className="bg-blue-600 p-2 rounded-lg hover:bg-blue-700 transition-colors accent-theme">
-                      <Send className="w-4 h-4" />
-                    </button>
-                  </form>
-                </div>
-              </div>
-            </aside>
+                  </div>
+
+                  <div className="flex-1 bg-zinc-800 rounded-2xl border border-zinc-700 flex flex-col shadow-xl overflow-hidden bg-sidebar border-theme">
+                    <div className="p-4 border-b border-zinc-700 border-theme flex justify-between items-center">
+                      <h2 className="font-bold flex items-center gap-2 text-primary">
+                        <MessageSquare className="w-4 h-4 text-blue-500" /> Chat
+                      </h2>
+                      <button 
+                        onClick={() => setShowSidebar(false)}
+                        className="p-1 hover:bg-zinc-700 rounded-md transition-colors hidden md:block"
+                        title="Hide Sidebar"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div 
+                      className="flex-1 overflow-y-auto p-4 space-y-4 cursor-pointer"
+                      onClick={() => setShowTimestamps(!showTimestamps)}
+                    >
+                      {messages.map((msg, i) => (
+                        <div key={i} className={`flex flex-col ${msg.isMine ? 'items-end' : 'items-start'}`}>
+                          <div className="flex items-center gap-2 mb-1 px-1">
+                            <span className="text-[10px] text-zinc-500 font-bold text-secondary">{msg.sender}</span>
+                            {showTimestamps && <span className="text-[8px] text-zinc-400 font-medium">{msg.timestamp}</span>}
+                          </div>
+                          <div 
+                            className={`chat-bubble ${msg.isMine ? 'chat-mine' : 'chat-theirs'}`}
+                            style={msg.isMine ? { backgroundColor: profileColor } : {}}
+                          >
+                            {msg.text}
+                          </div>
+                        </div>
+                      ))}
+                      <div ref={chatEndRef} />
+                    </div>
+                    <div className="p-4 bg-zinc-900/50 bg-main/50">
+                      <form onSubmit={handleSendMessage} className="flex gap-2">
+                        <input 
+                          type="text" 
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          placeholder="Message..." 
+                          className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 bg-main border-theme text-primary"
+                        />
+                        <button type="submit" className="bg-blue-600 p-2 rounded-lg hover:bg-blue-700 transition-colors accent-theme">
+                          <Send className="w-4 h-4" />
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                </motion.aside>
+              )}
+            </AnimatePresence>
           </main>
 
-          <footer className="h-20 border-t flex items-center justify-center px-6 bg-footer border-theme">
-            <div className="flex items-center gap-4">
+          <footer className="h-20 bg-zinc-950 border-t border-zinc-800 flex items-center overflow-x-auto no-scrollbar px-6 bg-footer border-theme">
+            <div className="flex items-center gap-4 mx-auto min-w-max">
               <button 
                 onClick={toggleMic}
                 className={`control-btn ${!micActive ? 'active-off' : ''}`}
@@ -634,7 +746,21 @@ export default function App() {
               >
                 <Monitor />
               </button>
-              <div className="w-px h-6 mx-2 border-l border-theme"></div>
+              <button 
+                onClick={() => setShowParticipants(true)}
+                className="control-btn"
+                title="Participants"
+              >
+                <User />
+              </button>
+              <button 
+                onClick={() => setShowSidebar(!showSidebar)}
+                className={`control-btn ${showSidebar ? 'bg-blue-600 border-blue-600' : ''}`}
+                title="Toggle Chat"
+              >
+                <MessageSquare />
+              </button>
+              <div className="w-px h-6 bg-zinc-800 mx-2"></div>
               <button 
                 onClick={() => {
                   setTempName(myName);
@@ -670,32 +796,32 @@ export default function App() {
                   initial={{ scale: 0.9, y: 20 }}
                   animate={{ scale: 1, y: 0 }}
                   exit={{ scale: 0.9, y: 20 }}
-                  className="border rounded-2xl w-full max-w-md overflow-hidden shadow-2xl bg-sidebar border-theme"
+                  className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl bg-sidebar border-theme"
                 >
-                  <div className="p-6 border-b flex items-center justify-between border-theme">
+                  <div className="p-6 border-b border-zinc-800 flex items-center justify-between border-theme">
                     <h2 className="text-xl font-bold flex items-center gap-2 text-primary">
                       <Settings className="w-5 h-5 text-blue-500" /> Settings
                     </h2>
-                    <button onClick={() => setShowSettings(false)} className="p-2 rounded-lg transition-colors hover:bg-main">
+                    <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-zinc-800 rounded-lg transition-colors hover:bg-main">
                       <X className="w-5 h-5 text-primary" />
                     </button>
                   </div>
                   
                   <div className="p-6 space-y-6">
                     <div className="space-y-3">
-                      <label className="text-xs font-bold text-secondary uppercase tracking-wider flex items-center gap-2">
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-2 text-secondary">
                         <User className="w-3 h-3" /> Display Name
                       </label>
                       <input 
                         type="text" 
                         value={tempName}
                         onChange={(e) => setTempName(e.target.value)}
-                        className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-main border-theme text-primary"
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-main border-theme text-primary"
                       />
                     </div>
 
                     <div className="space-y-3">
-                      <label className="text-xs font-bold text-secondary uppercase tracking-wider flex items-center gap-2">
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-2 text-secondary">
                         <Palette className="w-3 h-3" /> Profile Color
                       </label>
                       <div className="flex gap-3">
@@ -711,7 +837,7 @@ export default function App() {
                     </div>
 
                     <div className="space-y-3">
-                      <label className="text-xs font-bold text-secondary uppercase tracking-wider flex items-center gap-2">
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-2 text-secondary">
                         <Sun className="w-3 h-3" /> Appearance
                       </label>
                       <div className="grid grid-cols-2 gap-3">
@@ -722,7 +848,7 @@ export default function App() {
                           <button 
                             key={t.id}
                             onClick={() => setTempTheme(t.id as any)}
-                            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${tempTheme === t.id ? 'bg-blue-600 border-blue-500 text-white accent-theme' : 'text-secondary hover:border-theme bg-main border-theme'}`}
+                            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${tempTheme === t.id ? 'bg-blue-600 border-blue-500 text-white accent-theme' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-600 bg-main border-theme text-secondary'}`}
                           >
                             {t.icon} {t.name}
                           </button>
@@ -730,22 +856,22 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="pt-4 border-t border-theme">
+                    <div className="pt-4 border-t border-zinc-800 border-theme">
                       <button 
                         onClick={() => setTempSound(!tempSound)}
-                        className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-main border border-theme hover:bg-sidebar transition-colors"
+                        className="w-full flex items-center justify-between px-4 py-3 bg-zinc-800 rounded-xl bg-main border border-theme hover:bg-zinc-700 transition-colors"
                       >
                         <span className="text-sm font-medium text-primary flex items-center gap-2">
                           Sound Effects
                         </span>
-                        <div className={`w-10 h-5 rounded-full transition-colors relative ${tempSound ? 'bg-blue-600' : 'bg-footer'}`}>
+                        <div className={`w-10 h-5 rounded-full transition-colors relative ${tempSound ? 'bg-blue-600' : 'bg-zinc-600'}`}>
                           <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${tempSound ? 'left-6' : 'left-1'}`} />
                         </div>
                       </button>
                     </div>
                   </div>
 
-                  <div className="p-6 border-t bg-footer border-theme">
+                  <div className="p-6 bg-zinc-950/50 border-t border-zinc-800 bg-footer border-theme">
                     <button 
                       onClick={() => {
                         setMyName(tempName);
@@ -757,9 +883,81 @@ export default function App() {
                         }
                         setShowSettings(false);
                       }}
-                      className="w-full py-3 rounded-xl font-semibold transition-colors bg-main text-primary border border-theme"
+                      className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-semibold transition-colors bg-main text-primary"
                     >
                       Done
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+
+            {showParticipants && (
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+              >
+                <motion.div 
+                  initial={{ scale: 0.9, y: 20 }}
+                  animate={{ scale: 1, y: 0 }}
+                  exit={{ scale: 0.9, y: 20 }}
+                  className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl bg-sidebar border-theme"
+                >
+                  <div className="p-6 border-b border-zinc-800 flex items-center justify-between border-theme">
+                    <h2 className="text-xl font-bold flex items-center gap-2 text-primary">
+                      <User className="w-5 h-5 text-blue-500" /> Participants ({Object.keys(participants).length + 1})
+                    </h2>
+                    <button onClick={() => setShowParticipants(false)} className="p-2 hover:bg-zinc-800 rounded-lg transition-colors hover:bg-main">
+                      <X className="w-5 h-5 text-primary" />
+                    </button>
+                  </div>
+                  
+                  <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+                    {/* Me */}
+                    <div className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-xl border border-zinc-700/50">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-lg" style={{ backgroundColor: profileColor }}>
+                          {myName.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-primary">{myName} (You)</p>
+                          <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">{isHost ? 'Host' : 'Participant'}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {micActive ? <Mic className="w-4 h-4 text-zinc-400" /> : <MicOff className="w-4 h-4 text-red-500" />}
+                        {vidActive ? <Video className="w-4 h-4 text-zinc-400" /> : <VideoOff className="w-4 h-4 text-red-500" />}
+                      </div>
+                    </div>
+
+                    {/* Others */}
+                    {Object.values(participants).map((p: Participant) => (
+                      <div key={p.peerId} className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-xl border border-zinc-700/50">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-lg" style={{ backgroundColor: p.color }}>
+                            {p.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold text-primary">{p.name}</p>
+                            <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Participant</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          {p.mic ? <Mic className="w-4 h-4 text-zinc-400" /> : <MicOff className="w-4 h-4 text-red-500" />}
+                          {p.vid ? <Video className="w-4 h-4 text-zinc-400" /> : <VideoOff className="w-4 h-4 text-red-500" />}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="p-6 bg-zinc-950/50 border-t border-zinc-800 bg-footer border-theme">
+                    <button 
+                      onClick={() => setShowParticipants(false)}
+                      className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-semibold transition-colors bg-main text-primary"
+                    >
+                      Close
                     </button>
                   </div>
                 </motion.div>
