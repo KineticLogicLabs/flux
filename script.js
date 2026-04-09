@@ -1,193 +1,155 @@
 let peer = null;
 let localStream = null;
-let currentCall = null;
+let dataConn = null;
+let myProfile = { name: "Anonymous", color: "#3b82f6" };
 
-// UI Elements
 const entryScreen = document.getElementById('entry-screen');
 const callInterface = document.getElementById('call-interface');
-const controlsBar = document.getElementById('controls-bar');
-const localVideo = document.getElementById('local-video');
-const remoteVideo = document.getElementById('remote-video');
-const displayCode = document.getElementById('display-code');
+const chatMessages = document.getElementById('chat-messages');
+const chatForm = document.getElementById('chat-form');
+const chatInput = document.getElementById('chat-input');
 const joinInput = document.getElementById('join-id');
-const errorMsg = document.getElementById('error-msg');
+const joinBtn = document.getElementById('btn-join');
 
-// Buttons
-const btnCreate = document.getElementById('btn-create');
-const btnJoin = document.getElementById('btn-join');
-const btnHangup = document.getElementById('btn-hangup');
-const toggleMic = document.getElementById('toggle-mic');
-const toggleVideo = document.getElementById('toggle-video');
-
-// Initialize Lucide icons
+// Initialize Lucide Icons
 lucide.createIcons();
 
-/**
- * Generate a random 6-digit numeric code
- */
-function generateCode() {
-    return Math.floor(100000 + Math.random() * 900000).toString();
-}
+// Join button validation logic
+joinInput.addEventListener('input', () => {
+    if (joinInput.value.length === 6) {
+        joinBtn.disabled = false;
+        joinBtn.classList.remove('bg-zinc-700', 'text-zinc-500');
+        joinBtn.classList.add('bg-blue-600', 'text-white', 'hover:bg-blue-700', 'active:scale-95');
+    } else {
+        joinBtn.disabled = true;
+        joinBtn.classList.add('bg-zinc-700', 'text-zinc-500');
+        joinBtn.classList.remove('bg-blue-600', 'text-white', 'hover:bg-blue-700', 'active:scale-95');
+    }
+});
 
 /**
- * Setup Local Media (Camera/Mic)
+ * Initialize Media and Peer Connection
  */
-async function setupLocalMedia() {
+async function startApp(peerId) {
+    const nameInput = document.getElementById('user-name').value.trim();
+    if (nameInput) myProfile.name = nameInput;
+    
+    document.getElementById('local-display-name').innerText = myProfile.name;
+    document.getElementById('local-avatar').innerText = myProfile.name.charAt(0).toUpperCase();
+
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: true
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('local-video').srcObject = localStream;
+        
+        peer = peerId ? new Peer(peerId) : new Peer();
+        
+        peer.on('open', (id) => {
+            document.getElementById('display-code').innerText = id;
+            if (!peerId) connectToPeer(joinInput.value.toUpperCase());
+            showCallUI();
         });
-        localVideo.srcObject = localStream;
-        return true;
-    } catch (err) {
-        console.error("Failed to get local stream", err);
-        alert("Could not access camera/microphone. Please check permissions.");
-        return false;
+
+        peer.on('call', call => {
+            call.answer(localStream);
+            call.on('stream', stream => document.getElementById('remote-video').srcObject = stream);
+        });
+
+        peer.on('connection', conn => setupDataConnection(conn));
+
+    } catch (err) { 
+        console.error(err);
+        alert("Camera and microphone access are required for Flux."); 
     }
 }
 
 /**
- * Initialize Peer Connection
+ * Setup Data Connection for Chat and Identity
  */
-function initPeer(id) {
-    // We use the ID passed in (the 6-digit code)
-    peer = new Peer(id, {
-        debug: 2,
-        config: {
-            'iceServers': [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
+function setupDataConnection(conn) {
+    dataConn = conn;
+    dataConn.on('open', () => {
+        dataConn.send({ type: 'identity', name: myProfile.name, color: myProfile.color });
+    });
+
+    dataConn.on('data', data => {
+        if (data.type === 'identity') {
+            document.getElementById('remote-display-name').innerText = data.name;
+            document.getElementById('remote-status-dot').style.backgroundColor = data.color;
+            document.getElementById('waiting-overlay').classList.add('hidden');
+        } else if (data.type === 'chat') {
+            appendMessage(data.name, data.text, false);
         }
-    });
-
-    peer.on('open', (id) => {
-        console.log('Peer connected with ID:', id);
-        displayCode.innerText = id;
-        showCallInterface();
-    });
-
-    peer.on('call', (call) => {
-        // Answer incoming call
-        currentCall = call;
-        call.answer(localStream);
-        handleCall(call);
-    });
-
-    peer.on('error', (err) => {
-        console.error(err);
-        if (err.type === 'unavailable-id') {
-            errorMsg.innerText = "Meeting code already in use. Try again.";
-        } else if (err.type === 'peer-not-found') {
-            errorMsg.innerText = "Meeting code not found.";
-        } else {
-            errorMsg.innerText = "An error occurred.";
-        }
-        errorMsg.classList.remove('hidden');
     });
 }
 
 /**
- * Handle Remote Stream Logic
+ * Initiate call and data connection to a peer
  */
-function handleCall(call) {
-    call.on('stream', (remoteStream) => {
-        remoteVideo.srcObject = remoteStream;
-        document.getElementById('waiting-overlay').classList.add('hidden');
-        document.getElementById('remote-name').innerText = "Guest Participant";
-    });
-
-    call.on('close', () => {
-        window.location.reload();
-    });
+function connectToPeer(id) {
+    const call = peer.call(id, localStream);
+    call.on('stream', stream => document.getElementById('remote-video').srcObject = stream);
+    setupDataConnection(peer.connect(id));
 }
 
 /**
- * Switch UI from Landing to Call
+ * Update Chat UI
  */
-function showCallInterface() {
+function appendMessage(sender, text, isMine) {
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `flex flex-col ${isMine ? 'items-end' : 'items-start'}`;
+    msgDiv.innerHTML = `
+        <span class="text-[10px] text-zinc-500 mb-1 px-1">${sender}</span>
+        <div class="chat-bubble ${isMine ? 'chat-mine' : 'chat-theirs'}">${text}</div>
+    `;
+    chatMessages.appendChild(msgDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// Chat Form Submission
+chatForm.onsubmit = (e) => {
+    e.preventDefault();
+    const text = chatInput.value.trim();
+    if (text && dataConn) {
+        dataConn.send({ type: 'chat', name: myProfile.name, text: text });
+        appendMessage("You", text, true);
+        chatInput.value = '';
+    }
+};
+
+/**
+ * Switch from setup screen to call interface
+ */
+function showCallUI() {
     entryScreen.classList.add('hidden');
     callInterface.classList.remove('hidden');
-    controlsBar.classList.remove('hidden');
-    lucide.createIcons(); // Refresh icons for new visible elements
+    document.getElementById('controls-bar').classList.remove('hidden');
+    lucide.createIcons();
 }
 
-// --- Event Listeners ---
-
-// Create Meeting
-btnCreate.onclick = async () => {
-    const mediaReady = await setupLocalMedia();
-    if (mediaReady) {
-        const code = generateCode();
-        initPeer(code);
-    }
+// Button Listeners
+document.getElementById('btn-create').onclick = () => {
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    startApp(code);
 };
 
-// Join Meeting
-btnJoin.onclick = async () => {
-    const code = joinInput.value.trim();
-    if (code.length !== 6) {
-        errorMsg.innerText = "Please enter a valid 6-digit code.";
-        errorMsg.classList.remove('hidden');
-        return;
-    }
+document.getElementById('btn-join').onclick = () => startApp();
 
-    const mediaReady = await setupLocalMedia();
-    if (mediaReady) {
-        // For joining, we use a random ID for ourselves and then call the code
-        peer = new Peer();
-        peer.on('open', () => {
-            const call = peer.call(code, localStream);
-            currentCall = call;
-            handleCall(call);
-            displayCode.innerText = code;
-            showCallInterface();
-        });
-        
-        peer.on('error', (err) => {
-            errorMsg.innerText = "Meeting not found.";
-            errorMsg.classList.remove('hidden');
-        });
-    }
-};
+document.getElementById('btn-hangup').onclick = () => window.location.reload();
 
-// Mute/Unmute Mic
-toggleMic.onclick = () => {
-    const audioTrack = localStream.getAudioTracks()[0];
-    if (audioTrack.enabled) {
-        audioTrack.enabled = false;
-        toggleMic.classList.add('active-off');
-        toggleMic.innerHTML = '<i data-lucide="mic-off"></i>';
-    } else {
-        audioTrack.enabled = true;
-        toggleMic.classList.remove('active-off');
-        toggleMic.innerHTML = '<i data-lucide="mic"></i>';
-    }
+// Controls
+document.getElementById('toggle-mic').onclick = function() {
+    const audio = localStream.getAudioTracks()[0];
+    audio.enabled = !audio.enabled;
+    this.classList.toggle('active-off', !audio.enabled);
+    this.innerHTML = `<i data-lucide="${audio.enabled ? 'mic' : 'mic-off'}"></i>`;
     lucide.createIcons();
 };
 
-// Toggle Video
-toggleVideo.onclick = () => {
-    const videoTrack = localStream.getVideoTracks()[0];
-    const overlay = document.getElementById('local-muted-overlay');
-    
-    if (videoTrack.enabled) {
-        videoTrack.enabled = false;
-        toggleVideo.classList.add('active-off');
-        toggleVideo.innerHTML = '<i data-lucide="video-off"></i>';
-        overlay.classList.remove('hidden');
-    } else {
-        videoTrack.enabled = true;
-        toggleVideo.classList.remove('active-off');
-        toggleVideo.innerHTML = '<i data-lucide="video"></i>';
-        overlay.classList.add('hidden');
-    }
+document.getElementById('toggle-video').onclick = function() {
+    const video = localStream.getVideoTracks()[0];
+    video.enabled = !video.enabled;
+    this.classList.toggle('active-off', !video.enabled);
+    this.innerHTML = `<i data-lucide="${video.enabled ? 'video' : 'video-off'}"></i>`;
+    document.getElementById('local-muted-overlay').classList.toggle('hidden', video.enabled);
     lucide.createIcons();
-};
-
-// Hang up
-btnHangup.onclick = () => {
-    if (currentCall) currentCall.close();
-    window.location.reload();
 };
