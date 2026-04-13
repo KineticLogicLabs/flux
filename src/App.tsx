@@ -208,7 +208,7 @@ export default function App() {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
     }
-  }, [localStream]);
+  }, [localStream, inCall]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -614,6 +614,7 @@ export default function App() {
                     autoPlay 
                     muted 
                     playsInline 
+                    onLoadedMetadata={(e) => (e.target as HTMLVideoElement).play().catch(err => console.error("Local play failed", err))}
                   />
                   {!vidActive && (
                     <div className="absolute inset-0 flex items-center justify-center bg-main" style={{ backgroundColor: profileColor }}>
