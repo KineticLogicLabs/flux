@@ -1,15 +1,19 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { defineConfig, loadEnv } from 'vite';
+
+// This section ensures path resolving works during the GitHub build process
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   
   return {
-    // 1. Set the base to your repository name (e.g., '/flux-meet/')
-    // If you are deploying to a custom domain or kineticlogiclabs.github.io, set this to '/'
-    base: '/flux-meet/', 
+    // This tells the browser your site is at ziyaoxu.github.io/flux/
+    base: '/flux/',
     
     plugins: [react(), tailwindcss()],
     
@@ -19,18 +23,14 @@ export default defineConfig(({ mode }) => {
     
     resolve: {
       alias: {
-        // 2. Ensuring '@' points to your root or src directory correctly
-        '@': path.resolve(__dirname, './'),
+        '@': path.resolve(__dirname, '.'),
       },
     },
     
     server: {
+      // HMR is disabled in AI Studio via DISABLE_HMR env var.
+      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
     },
-
-    build: {
-      // 3. Ensuring the build output is clean for deployment
-      outDir: 'dist',
-    }
   };
 });
