@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  --bg-main: #18181b; /* zinc-900 */
+  --bg-sidebar: #27272a; /* zinc-800 */
+  --bg-footer: #09090b; /* zinc-950 */
+  --border-color: #3f3f46; /* zinc-700 */
+  --text-primary: #ffffff;
+  --text-secondary: #a1a1aa; /* zinc-400 */
+  --accent-color: #2563eb; /* blue-600 */
+}
+
+[data-theme="light"] {
+  --bg-main: #ffffff;
+  --bg-sidebar: #f4f4f5; /* zinc-100 */
+  --bg-footer: #f4f4f5; /* zinc-100 */
+  --border-color: #e4e4e7; /* zinc-200 */
+  --text-primary: #18181b; /* zinc-900 */
+  --text-secondary: #71717a; /* zinc-500 */
+  --accent-color: #2563eb;
+}
+
+.bg-main { background-color: var(--bg-main); }
+.bg-sidebar { background-color: var(--bg-sidebar); }
+.bg-footer { background-color: var(--bg-footer); }
+.border-theme { border-color: var(--border-color); }
+.text-primary { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.accent-theme { background-color: var(--accent-color); }
+
+.control-btn {
+    @apply w-11 h-11 rounded-full flex items-center justify-center transition-all border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-white;
+}
+
+[data-theme="light"] .control-btn {
+    @apply bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-900;
+}
+
+.control-btn.active-off { @apply bg-red-500 border-red-500 text-white; }
+.mirror { transform: scaleX(-1); }
+
+.chat-bubble {
+    @apply max-w-[85%] rounded-2xl p-3 text-sm break-words shadow-sm;
+}
+.chat-mine { @apply bg-blue-600 ml-auto rounded-tr-none text-white; }
+.chat-theirs { @apply bg-zinc-700 mr-auto rounded-tl-none text-zinc-100; }
+
+[data-theme="light"] .chat-theirs {
+    @apply bg-zinc-200 text-zinc-900;
+}
+
+button:disabled {
+    @apply cursor-not-allowed bg-zinc-800 text-zinc-600 border-zinc-700 opacity-50;
+}
+
+[data-theme="light"] button:disabled {
+    @apply bg-zinc-100 text-zinc-400 border-zinc-200;
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
+
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
