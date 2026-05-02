@@ -3,6 +3,7 @@
   "description": "A high-performance peer-to-peer video meeting application with real-time chat and screen sharing capabilities.",
   "requestFramePermissions": [
     "camera",
-    "microphone"
+    "microphone",
+    "display-capture"
   ]
 }

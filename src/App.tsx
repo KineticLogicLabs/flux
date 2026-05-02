@@ -25,7 +25,8 @@ import {
   Palette,
   User,
   Moon,
-  Sun
+  Sun,
+  ChevronDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -121,6 +122,43 @@ export default function App() {
   
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioId, setSelectedAudioId] = useState<string>('');
+  const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+  const [showAudioList, setShowAudioList] = useState(false);
+  const [showVideoList, setShowVideoList] = useState(false);
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
+
+  // Push-to-talk logic
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !isSpacePressed && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        setIsSpacePressed(true);
+        if (localStream) {
+          localStream.getAudioTracks().forEach(track => track.enabled = true);
+          setMicActive(true);
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setIsSpacePressed(false);
+        if (localStream) {
+          localStream.getAudioTracks().forEach(track => track.enabled = false);
+          setMicActive(false);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [isSpacePressed, localStream]);
   const [participants, setParticipants] = useState<Record<string, Participant>>({});
   
   const [messages, setMessages] = useState<Message[]>([]);
@@ -128,8 +166,8 @@ export default function App() {
   
   const [myName, setMyName] = useState('User');
   
-  const [micActive, setMicActive] = useState(true);
-  const [vidActive, setVidActive] = useState(true);
+  const [micActive, setMicActive] = useState(false);
+  const [vidActive, setVidActive] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
@@ -343,6 +381,79 @@ export default function App() {
     });
   };
 
+  useEffect(() => {
+    const getDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audio = devices.filter(d => d.kind === 'audioinput');
+        const video = devices.filter(d => d.kind === 'videoinput');
+        setAudioDevices(audio);
+        setVideoDevices(video);
+        
+        if (audio.length > 0 && !selectedAudioId) setSelectedAudioId(audio[0].deviceId);
+        if (video.length > 0 && !selectedVideoId) setSelectedVideoId(video[0].deviceId);
+      } catch (err) {
+        console.error("Error enumerating devices:", err);
+      }
+    };
+    getDevices();
+    navigator.mediaDevices.addEventListener('devicechange', getDevices);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', getDevices);
+  }, [selectedAudioId, selectedVideoId]);
+
+  const changeDevice = async (type: 'audio' | 'video', deviceId: string) => {
+    if (!localStream) return;
+
+    const constraints = {
+      audio: type === 'audio' ? { deviceId: { exact: deviceId } } : micActive,
+      video: type === 'video' ? { deviceId: { exact: deviceId } } : vidActive
+    };
+
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      if (type === 'audio') {
+        const newTrack = newStream.getAudioTracks()[0];
+        const oldTrack = localStream.getAudioTracks()[0];
+        if (oldTrack) {
+          oldTrack.stop();
+          localStream.removeTrack(oldTrack);
+        }
+        localStream.addTrack(newTrack);
+        setSelectedAudioId(deviceId);
+        newTrack.enabled = micActive;
+      } else {
+        const newTrack = newStream.getVideoTracks()[0];
+        const oldTrack = localStream.getVideoTracks()[0];
+        if (oldTrack) {
+          oldTrack.stop();
+          localStream.removeTrack(oldTrack);
+        }
+        localStream.addTrack(newTrack);
+        setSelectedVideoId(deviceId);
+        newTrack.enabled = vidActive;
+      }
+
+      // Replace tracks in all active calls
+      (Object.values(callsRef.current) as any[]).forEach(call => {
+        if (call.peerConnection) {
+          const sender = (call.peerConnection as RTCPeerConnection).getSenders().find(s => 
+            s.track?.kind === (type === 'audio' ? 'audio' : 'video')
+          );
+          if (sender) {
+            sender.replaceTrack(type === 'audio' ? newStream.getAudioTracks()[0] : newStream.getVideoTracks()[0]);
+          }
+        }
+      });
+
+      setLocalStream(new MediaStream(localStream.getTracks()));
+    } catch (err) {
+      console.error(`Error changing ${type} device:`, err);
+      setError(`Failed to switch ${type} device.`);
+      setTimeout(() => setError(null), 3000);
+    }
+  };
+
   const startFlux = async (targetId: string, isJoining: boolean) => {
     setError(null);
     setIsConnecting(true);
@@ -353,10 +464,18 @@ export default function App() {
 
     let stream: MediaStream | null = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ 
+        video: selectedVideoId ? { deviceId: { exact: selectedVideoId } } : true, 
+        audio: selectedAudioId ? { deviceId: { exact: selectedAudioId } } : true 
+      });
+      
+      // Disable tracks initially as requested
+      stream.getAudioTracks().forEach(t => t.enabled = false);
+      stream.getVideoTracks().forEach(t => t.enabled = false);
+      
       setLocalStream(stream);
-      setMicActive(true);
-      setVidActive(true);
+      setMicActive(false);
+      setVidActive(false);
     } catch (err) {
       console.warn("Camera/Mic access denied, continuing without media:", err);
       setLocalStream(null);
@@ -476,8 +595,14 @@ export default function App() {
         videoTrack.onended = () => {
           stopScreenShare();
         };
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error sharing screen:", err);
+        if (err.name === 'NotAllowedError') {
+          setError("Screen sharing permission was denied. If you're in a browser sandbox, try opening the app in a new tab.");
+        } else {
+          setError("Could not start screen sharing: " + err.message);
+        }
+        setTimeout(() => setError(null), 5000);
       }
     } else {
       stopScreenShare();
@@ -724,22 +849,109 @@ export default function App() {
             </AnimatePresence>
           </main>
 
-          <footer className="h-20 bg-zinc-950 border-t border-zinc-800 flex items-center overflow-x-auto no-scrollbar px-6 bg-footer border-theme">
-            <div className="flex items-center gap-4 mx-auto min-w-max">
-              <button 
-                onClick={toggleMic}
-                className={`control-btn ${!micActive ? 'active-off' : ''}`}
-                title="Toggle Microphone"
-              >
-                {micActive ? <Mic /> : <MicOff />}
-              </button>
-              <button 
-                onClick={toggleVideo}
-                className={`control-btn ${!vidActive ? 'active-off' : ''}`}
-                title="Toggle Video"
-              >
-                {vidActive ? <Video /> : <VideoOff />}
-              </button>
+          <footer className="h-24 bg-zinc-950 border-t border-zinc-800 flex items-center px-6 bg-footer border-theme relative z-30">
+            <div className="flex items-center gap-4 mx-auto w-full max-w-5xl justify-center relative">
+              <div className="relative flex items-center">
+                <button 
+                  onClick={toggleMic}
+                  className={`control-btn rounded-r-none border-r-0 ${!micActive ? 'active-off' : ''} ${isSpacePressed ? 'ring-2 ring-blue-500' : ''}`}
+                  title={isSpacePressed ? "Muted (Space held)" : "Toggle Microphone"}
+                >
+                  {micActive ? <Mic /> : <MicOff />}
+                </button>
+                <button 
+                  onClick={() => {
+                    setShowAudioList(!showAudioList);
+                    setShowVideoList(false);
+                  }}
+                  className={`control-btn rounded-l-none w-6 px-0 flex items-center justify-center ${!micActive ? 'active-off' : ''}`}
+                >
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAudioList ? 'rotate-180' : ''}`} />
+                </button>
+                
+                <AnimatePresence>
+                  {showAudioList && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute bottom-full mb-4 left-0 w-72 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl z-[100] bg-sidebar border-theme"
+                    >
+                      <div className="p-2 max-h-80 overflow-y-auto">
+                        <div className="px-3 py-2 text-[10px] uppercase tracking-widest text-zinc-500 font-bold border-b border-zinc-800 mb-1 border-theme">Microphones</div>
+                        {audioDevices.length === 0 ? (
+                          <div className="px-3 py-4 text-sm text-zinc-500 text-center italic">No devices found</div>
+                        ) : (
+                          audioDevices.map(device => (
+                            <button 
+                              key={device.deviceId}
+                              onClick={() => {
+                                changeDevice('audio', device.deviceId);
+                                setShowAudioList(false);
+                              }}
+                              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all focus:outline-none hover:ring-2 hover:ring-blue-500/50 flex items-center justify-between text-primary hover:bg-zinc-800 group/item ${selectedAudioId === device.deviceId ? 'text-blue-400 bg-blue-500/10 ring-1 ring-blue-500/30' : ''}`}
+                            >
+                              <span className="truncate pr-2">{device.label || `Microphone ${device.deviceId.slice(0, 5)}`}</span>
+                              {selectedAudioId === device.deviceId && <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.5)]" />}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              <div className="relative flex items-center">
+                <button 
+                  onClick={toggleVideo}
+                  className={`control-btn rounded-r-none border-r-0 ${!vidActive ? 'active-off' : ''}`}
+                  title="Toggle Video"
+                >
+                  {vidActive ? <Video /> : <VideoOff />}
+                </button>
+                <button 
+                  onClick={() => {
+                    setShowVideoList(!showVideoList);
+                    setShowAudioList(false);
+                  }}
+                  className={`control-btn rounded-l-none w-6 px-0 flex items-center justify-center ${!vidActive ? 'active-off' : ''}`}
+                >
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showVideoList ? 'rotate-180' : ''}`} />
+                </button>
+
+                <AnimatePresence>
+                  {showVideoList && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute bottom-full mb-4 left-0 w-72 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl z-[100] bg-sidebar border-theme"
+                    >
+                      <div className="p-2 max-h-80 overflow-y-auto">
+                        <div className="px-3 py-2 text-[10px] uppercase tracking-widest text-zinc-500 font-bold border-b border-zinc-800 mb-1 border-theme">Cameras</div>
+                        {videoDevices.length === 0 ? (
+                          <div className="px-3 py-4 text-sm text-zinc-500 text-center italic">No devices found</div>
+                        ) : (
+                          videoDevices.map(device => (
+                            <button 
+                              key={device.deviceId}
+                              onClick={() => {
+                                changeDevice('video', device.deviceId);
+                                setShowVideoList(false);
+                              }}
+                              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all focus:outline-none hover:ring-2 hover:ring-blue-500/50 flex items-center justify-between text-primary hover:bg-zinc-800 group/item ${selectedVideoId === device.deviceId ? 'text-blue-400 bg-blue-500/10 ring-1 ring-blue-500/30' : ''}`}
+                            >
+                              <span className="truncate pr-2">{device.label || `Camera ${device.deviceId.slice(0, 5)}`}</span>
+                              {selectedVideoId === device.deviceId && <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.5)]" />}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
               <button 
                 onClick={toggleScreenShare}
                 className={`control-btn ${isScreenSharing ? 'bg-blue-600 border-blue-600' : ''}`}
