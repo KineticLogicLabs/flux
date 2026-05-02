@@ -1,20 +1,55 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Flux | Online Video Meeting
 
-# Run and deploy your AI Studio app
+Flux is a high-performance peer-to-peer video meeting application designed for seamless communication. It supports multi-user video calls, real-time chat, and screen sharing, all within a polished, responsive interface.
 
-This contains everything you need to run your app locally.
+## 🚀 Features
 
-View your app in AI Studio: https://ai.studio/apps/272c305d-f201-490b-964e-cd0fff5de310
+- **P2P Video & Audio**: High-quality real-time communication powered by PeerJS.
+- **Multi-User Mesh Networking**: Connect with multiple participants in a direct peer-to-peer network.
+- **Host Controls**: Only the meeting host can end the call for all participants.
+- **Real-Time Chat**: Integrated chat system with message history and timestamps.
+- **Screen Sharing**: Effortlessly share your screen with other participants.
+- **Responsive Design**: Optimized for Desktop, Tablet, and Mobile with explicit 4:3 video ratios.
+- **Theming**: Support for Dark and Light modes with customizable profile colors.
+- **Participants List**: Easily view and manage current attendees and their media status.
 
-## Run Locally
+## 🛠️ Technical Stack
 
-**Prerequisites:**  Node.js
+- **Framework**: [React 19](https://react.dev/)
+- **Styling**: [Tailwind CSS 4](https://tailwindcss.com/)
+- **Networking**: [PeerJS](https://peerjs.com/) (WebRTC)
+- **Icons**: [Lucide React](https://lucide.dev/)
+- **Animations**: [Framer Motion](https://www.framer.com/motion/)
 
+## 🏁 Getting Started
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### Prerequisites
+
+- Node.js installed on your machine.
+
+### Installation
+
+1. Clone the repository or download the source code.
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+### Development
+
+Run the development server:
+```bash
+npm run dev
+```
+The application will be available at `http://localhost:3000`.
+
+### Building for Production
+
+Create an optimized production build:
+```bash
+npm run build
+```
+
+## 🔒 Security Note
+
+This app uses direct peer-to-peer connections. For production environments, consider implementing a TURN server for better reliability across restrictive networks.
