@@ -43,11 +43,24 @@ npm run dev
 ```
 The application will be available at `http://localhost:3000`.
 
-### Building for Production
+## 🚀 Deployment
 
-Create an optimized production build:
+### GitHub Pages (Recommended)
+
+This project includes a GitHub Action for automatic deployment.
+
+1. Push your code to the `main` branch.
+2. The Action will automatically build the project and push it to a `gh-pages` branch.
+3. In your GitHub repository settings, go to **Settings > Pages**.
+4. Under **Build and deployment > Branch**, select `gh-pages` and `/ (root)`.
+5. Your site will be live at `https://<username>.github.io/<repo-name>/`.
+
+### Manual Build
+
+To build manually and serve from the `dist` folder:
 ```bash
 npm run build
+npm run preview
 ```
 
 ## 🔒 Security Note
