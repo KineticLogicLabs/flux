@@ -26,7 +26,12 @@ import {
   User,
   Moon,
   Sun,
-  ChevronDown
+  ChevronDown,
+  AlertCircle,
+  Circle,
+  Square,
+  Camera,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -55,6 +60,7 @@ interface ChatData {
 interface PeerListData {
   type: 'peer-list';
   peers: string[];
+  startTime?: number;
 }
 
 interface EndMeetingData {
@@ -94,7 +100,7 @@ const RemoteVideo = ({ stream, participant }: { stream: MediaStream, participant
       {!isActive && (
         <div className="absolute inset-0 flex items-center justify-center bg-zinc-700">
           <div 
-            className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold text-white shadow-xl"
+            className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold text-white"
             style={{ backgroundColor: participant?.color || '#2563eb' }}
           >
             {participant?.name.charAt(0).toUpperCase() || '?'}
@@ -176,11 +182,17 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [showTimestamps, setShowTimestamps] = useState(false);
   const [meetingDuration, setMeetingDuration] = useState(0);
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [showRecordMenu, setShowRecordMenu] = useState(false);
+  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
 
   // Temp settings for modal
   const [tempName, setTempName] = useState(myName);
   const [tempColor, setTempColor] = useState(profileColor);
   const [tempTheme, setTempTheme] = useState(theme);
+  const [tempZoomLevel, setTempZoomLevel] = useState(zoomLevel);
 
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<Record<string, DataConnection>>({});
@@ -189,20 +201,31 @@ export default function App() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     if (inCall) {
+      if (isHost && !startTime) {
+        setStartTime(Date.now());
+      }
+      
       timerRef.current = setInterval(() => {
-        setMeetingDuration(prev => prev + 1);
+        if (startTime) {
+          setMeetingDuration(Math.floor((Date.now() - startTime) / 1000));
+        } else {
+          setMeetingDuration(prev => prev + 1);
+        }
       }, 1000);
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       setMeetingDuration(0);
+      setStartTime(null);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [inCall]);
+  }, [inCall, startTime, isHost]);
 
   const formatDuration = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
@@ -255,12 +278,13 @@ export default function App() {
         vid: vidActive
       });
 
-      // If I'm the host, send the list of other peers to the new joiner
+      // If I'm the host, send the list of other peers and the meeting start time to the new joiner
       if (isHost) {
         const otherPeers = Object.keys(connectionsRef.current).filter(id => id !== peerId);
         conn.send({
           type: 'peer-list',
-          peers: otherPeers
+          peers: otherPeers,
+          startTime: startTime || Date.now()
         });
       }
     };
@@ -293,6 +317,9 @@ export default function App() {
         }]);
       } else if (peerData.type === 'peer-list') {
         // As a joiner, I received a list of other peers from the host. Connect to them.
+        if (peerData.startTime) {
+          setStartTime(peerData.startTime);
+        }
         peerData.peers.forEach(id => {
           if (!connectionsRef.current[id]) {
             connectToPeer(id, localStream);
@@ -563,7 +590,7 @@ export default function App() {
       } catch (err: any) {
         console.error("Error sharing screen:", err);
         if (err.name === 'NotAllowedError') {
-          setError("Screen sharing permission was denied. If you're in a browser sandbox, try opening the app in a new tab.");
+          setError("Screen sharing permission was denied.");
         } else {
           setError("Could not start screen sharing: " + err.message);
         }
@@ -593,6 +620,99 @@ export default function App() {
     }
   };
 
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+  };
+
+  const takeScreenshot = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      
+      await new Promise((resolve) => {
+        video.onloadedmetadata = () => {
+          video.play().then(resolve);
+        };
+      });
+
+      // Give it a tiny bit of time to render
+      await new Promise(r => setTimeout(r, 100));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d');
+      context?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      const dataUrl = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `flux-screenshot-${Date.now()}.png`;
+      link.click();
+      
+      stream.getTracks().forEach(track => track.stop());
+      setShowRecordMenu(false);
+    } catch (err) {
+      console.error("Screenshot failed:", err);
+      setError("Failed to take screenshot.");
+    }
+  };
+
+  const toggleRecording = async (type: 'video' | 'audio') => {
+    if (isRecordingVideo || isRecordingAudio) {
+      stopRecording();
+      return;
+    }
+
+    try {
+      let stream: MediaStream;
+      if (type === 'video') {
+        stream = await navigator.mediaDevices.getDisplayMedia({ 
+          video: true, 
+          audio: true 
+        });
+        setIsRecordingVideo(true);
+      } else {
+        stream = await navigator.mediaDevices.getDisplayMedia({ 
+          video: { width: 1, height: 1 }, 
+          audio: true 
+        });
+        setIsRecordingAudio(true);
+      }
+      
+      recordedChunksRef.current = [];
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: type === 'video' ? 'video/webm' : 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `flux-${type}-${Date.now()}.${type === 'video' ? 'webm' : 'webm'}`;
+        a.click();
+        stream.getTracks().forEach(track => track.stop());
+        setIsRecordingVideo(false);
+        setIsRecordingAudio(false);
+      };
+
+      mediaRecorder.start();
+      setShowRecordMenu(false);
+    } catch (err) {
+      console.error("Recording failed:", err);
+      setError("Failed to start recording.");
+      setIsRecordingVideo(false);
+      setIsRecordingAudio(false);
+    }
+  };
+
   const handleSendMessage = (e: FormEvent) => {
     e.preventDefault();
     if (chatInput.trim()) {
@@ -613,12 +733,24 @@ export default function App() {
       <AnimatePresence>
         {error && (
           <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed top-6 left-1/2 -translate-x-1/2 z-[100] bg-red-600 text-white px-6 py-3 rounded-full shadow-2xl font-bold flex items-center gap-2 border border-red-500"
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-8 left-1/2 -translate-x-1/2 z-[100] px-6 py-4 rounded-2xl bg-zinc-900/40 backdrop-blur-xl border border-red-500/50 flex items-center gap-3 min-w-[320px] max-w-md"
           >
-            <X className="w-4 h-4" /> {error}
+            <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center flex-shrink-0">
+              <AlertCircle className="w-5 h-5 text-red-500" />
+            </div>
+            <div className="flex-1">
+              <p className="text-xs font-bold text-red-400 uppercase tracking-widest mb-0.5">System Error</p>
+              <p className="text-sm text-zinc-100 font-medium leading-snug">{error}</p>
+            </div>
+            <button 
+              onClick={() => setError(null)}
+              className="p-1 hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4 text-zinc-400" />
+            </button>
           </motion.div>
         )}
 
@@ -629,7 +761,7 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950 px-4 bg-footer"
           >
-            <div className="max-w-md w-full bg-zinc-900 p-8 rounded-2xl border border-zinc-800 shadow-2xl bg-sidebar border-theme">
+            <div className="max-w-md w-full bg-zinc-900 p-8 rounded-2xl border border-zinc-800 bg-sidebar border-theme">
               <div className="flex flex-col items-center mb-10">
                 <h1 className="text-5xl font-black tracking-tight text-center bg-gradient-to-br from-white to-zinc-500 bg-clip-text text-transparent">Flux</h1>
                 <p className="text-zinc-500 text-sm mt-2">Online video meeting</p>
@@ -643,7 +775,7 @@ export default function App() {
                     value={userName}
                     onChange={(e) => setUserName(e.target.value)}
                     placeholder="User" 
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition-all text-primary"
                   />
                 </div>
 
@@ -669,7 +801,7 @@ export default function App() {
                       value={joinId}
                       onChange={(e) => setJoinId(e.target.value.toUpperCase())}
                       placeholder="6-digit code" 
-                      className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-center font-mono uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                      className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-center font-mono uppercase tracking-widest focus:outline-none focus:border-blue-500 transition-all text-primary"
                     />
                     <button 
                       onClick={handleJoin}
@@ -701,6 +833,7 @@ export default function App() {
                   <video 
                     ref={localVideoRef}
                     className={`w-full h-full object-cover mirror ${!vidActive ? 'hidden' : ''}`} 
+                    style={{ transform: `scaleX(-1) scale(${zoomLevel})` }}
                     autoPlay 
                     muted 
                     playsInline 
@@ -742,7 +875,7 @@ export default function App() {
                   transition={{ type: 'tween', ease: 'easeInOut', duration: 0.3 }}
                   className="fixed inset-y-0 right-0 z-40 w-full sm:w-80 bg-zinc-900 border-l border-zinc-800 flex flex-col gap-4 p-4 md:relative md:inset-auto md:border-l-0 md:p-0 md:bg-transparent md:z-0 md:w-80 h-full"
                 >
-                  <div className="bg-zinc-800 rounded-2xl border border-zinc-700 p-4 shadow-xl bg-sidebar border-theme flex justify-between items-start">
+                  <div className="bg-zinc-800 rounded-2xl border border-zinc-700 p-4 bg-sidebar border-theme flex justify-between items-start">
                     <div>
                       <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1 block text-secondary">Meeting ID</label>
                       <div className="text-2xl font-mono font-black text-blue-400 tracking-tighter">{meetingId}</div>
@@ -761,7 +894,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="flex-1 bg-zinc-800 rounded-2xl border border-zinc-700 flex flex-col shadow-xl overflow-hidden bg-sidebar border-theme">
+                  <div className="flex-1 bg-zinc-800 rounded-2xl border border-zinc-700 flex flex-col overflow-hidden bg-sidebar border-theme">
                     <div className="p-4 border-b border-zinc-700 border-theme flex justify-between items-center">
                       <h2 className="font-bold flex items-center gap-2 text-primary">
                         <MessageSquare className="w-4 h-4 text-blue-500" /> Chat
@@ -801,7 +934,7 @@ export default function App() {
                           value={chatInput}
                           onChange={(e) => setChatInput(e.target.value)}
                           placeholder="Message..." 
-                          className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 bg-main border-theme text-primary"
+                          className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 bg-main border-theme text-primary"
                         />
                         <button type="submit" className="bg-blue-600 p-2 rounded-lg hover:bg-blue-700 transition-colors accent-theme">
                           <Send className="w-4 h-4" />
@@ -840,7 +973,7 @@ export default function App() {
                       initial={{ opacity: 0, y: 10, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                      className="absolute bottom-full mb-4 left-0 w-72 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl z-[100] bg-sidebar border-theme"
+                      className="absolute bottom-full mb-4 left-0 w-72 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden z-[100] bg-sidebar border-theme"
                     >
                       <div className="p-2 max-h-80 overflow-y-auto">
                         <div className="px-3 py-2 text-[10px] uppercase tracking-widest text-zinc-500 font-bold border-b border-zinc-800 mb-1 border-theme">Microphones</div>
@@ -854,10 +987,10 @@ export default function App() {
                                 changeDevice('audio', device.deviceId);
                                 setShowAudioList(false);
                               }}
-                              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all focus:outline-none hover:ring-2 hover:ring-blue-500/50 flex items-center justify-between text-primary hover:bg-zinc-800 group/item ${selectedAudioId === device.deviceId ? 'text-blue-400 bg-blue-500/10 ring-1 ring-blue-500/30' : ''}`}
+                              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all focus:outline-none flex items-center justify-between text-primary hover:bg-zinc-800 group/item ${selectedAudioId === device.deviceId ? 'text-blue-400 bg-blue-500/10 border border-blue-500/30' : ''}`}
                             >
                               <span className="truncate pr-2">{device.label || `Microphone ${device.deviceId.slice(0, 5)}`}</span>
-                              {selectedAudioId === device.deviceId && <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.5)]" />}
+                              {selectedAudioId === device.deviceId && <div className="w-2 h-2 rounded-full bg-blue-400" />}
                             </button>
                           ))
                         )}
@@ -891,7 +1024,7 @@ export default function App() {
                       initial={{ opacity: 0, y: 10, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                      className="absolute bottom-full mb-4 left-0 w-72 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl z-[100] bg-sidebar border-theme"
+                      className="absolute bottom-full mb-4 left-0 w-72 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden z-[100] bg-sidebar border-theme"
                     >
                       <div className="p-2 max-h-80 overflow-y-auto">
                         <div className="px-3 py-2 text-[10px] uppercase tracking-widest text-zinc-500 font-bold border-b border-zinc-800 mb-1 border-theme">Cameras</div>
@@ -905,10 +1038,10 @@ export default function App() {
                                 changeDevice('video', device.deviceId);
                                 setShowVideoList(false);
                               }}
-                              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all focus:outline-none hover:ring-2 hover:ring-blue-500/50 flex items-center justify-between text-primary hover:bg-zinc-800 group/item ${selectedVideoId === device.deviceId ? 'text-blue-400 bg-blue-500/10 ring-1 ring-blue-500/30' : ''}`}
+                              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all focus:outline-none flex items-center justify-between text-primary hover:bg-zinc-800 group/item ${selectedVideoId === device.deviceId ? 'text-blue-400 bg-blue-500/10 border border-blue-500/30' : ''}`}
                             >
                               <span className="truncate pr-2">{device.label || `Camera ${device.deviceId.slice(0, 5)}`}</span>
-                              {selectedVideoId === device.deviceId && <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.5)]" />}
+                              {selectedVideoId === device.deviceId && <div className="w-2 h-2 rounded-full bg-blue-400" />}
                             </button>
                           ))
                         )}
@@ -924,6 +1057,52 @@ export default function App() {
               >
                 <Monitor />
               </button>
+
+              <div className="relative flex items-center">
+                <button 
+                  onClick={() => setShowRecordMenu(!showRecordMenu)}
+                  className={`control-btn transition-all ${(isRecordingVideo || isRecordingAudio) ? 'bg-red-600 border-red-600 animate-pulse' : ''}`}
+                  title="Record/Capture"
+                >
+                  {(isRecordingVideo || isRecordingAudio) ? <Square className="fill-white" /> : <Download />}
+                </button>
+                
+                <AnimatePresence>
+                  {showRecordMenu && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute bottom-full mb-4 left-1/2 -translate-x-1/2 w-56 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden z-[100] bg-sidebar border-theme"
+                    >
+                      <div className="p-2">
+                        <button 
+                          onClick={takeScreenshot}
+                          className="w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all flex items-center gap-3 text-primary hover:bg-zinc-800"
+                        >
+                          <Camera className="w-4 h-4 text-blue-400" />
+                          <span>Take Screenshot</span>
+                        </button>
+                        <button 
+                          onClick={() => toggleRecording('video')}
+                          className="w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all flex items-center gap-3 text-primary hover:bg-zinc-800"
+                        >
+                          <Circle className={`w-4 h-4 ${isRecordingVideo ? 'text-red-500 fill-red-500 animate-pulse' : 'text-red-400'}`} />
+                          <span>{isRecordingVideo ? 'Stop Recording' : 'Record Meeting'}</span>
+                        </button>
+                        <button 
+                          onClick={() => toggleRecording('audio')}
+                          className="w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all flex items-center gap-3 text-primary hover:bg-zinc-800"
+                        >
+                          <Mic className={`w-4 h-4 ${isRecordingAudio ? 'text-red-500 animate-pulse' : 'text-zinc-400'}`} />
+                          <span>{isRecordingAudio ? 'Stop Audio' : 'Record Audio'}</span>
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
               <button 
                 onClick={() => setShowParticipants(true)}
                 className="control-btn"
@@ -944,6 +1123,7 @@ export default function App() {
                   setTempName(myName);
                   setTempColor(profileColor);
                   setTempTheme(theme);
+                  setTempZoomLevel(zoomLevel);
                   setShowSettings(true);
                 }}
                 className="control-btn"
@@ -973,7 +1153,7 @@ export default function App() {
                   initial={{ scale: 0.9, y: 20 }}
                   animate={{ scale: 1, y: 0 }}
                   exit={{ scale: 0.9, y: 20 }}
-                  className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl bg-sidebar border-theme"
+                  className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden bg-sidebar border-theme"
                 >
                   <div className="p-6 border-b border-zinc-800 flex items-center justify-between border-theme">
                     <h2 className="text-xl font-bold flex items-center gap-2 text-primary">
@@ -993,7 +1173,7 @@ export default function App() {
                         type="text" 
                         value={tempName}
                         onChange={(e) => setTempName(e.target.value)}
-                        className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-main border-theme text-primary"
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500 bg-main border-theme text-primary"
                       />
                     </div>
 
@@ -1032,6 +1212,24 @@ export default function App() {
                         ))}
                       </div>
                     </div>
+
+                    <div className="space-y-3">
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-2 text-secondary">
+                        <Video className="w-3 h-3" /> Camera Zoom
+                      </label>
+                      <div className="flex items-center gap-4">
+                        <input 
+                          type="range" 
+                          min="1" 
+                          max="2" 
+                          step="0.1" 
+                          value={tempZoomLevel}
+                          onChange={(e) => setTempZoomLevel(parseFloat(e.target.value))}
+                          className="flex-1 accent-blue-500 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                        />
+                        <span className="text-sm font-mono text-blue-400 w-12 text-right">{tempZoomLevel.toFixed(1)}x</span>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="p-6 bg-zinc-950/50 border-t border-zinc-800 bg-footer border-theme">
@@ -1040,6 +1238,7 @@ export default function App() {
                         setMyName(tempName);
                         setProfileColor(tempColor);
                         setTheme(tempTheme);
+                        setZoomLevel(tempZoomLevel);
                         if (tempName !== myName && inCall) {
                           sendStatusUpdate(micActive, vidActive, tempName);
                         }
@@ -1065,7 +1264,7 @@ export default function App() {
                   initial={{ scale: 0.9, y: 20 }}
                   animate={{ scale: 1, y: 0 }}
                   exit={{ scale: 0.9, y: 20 }}
-                  className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl bg-sidebar border-theme"
+                  className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden bg-sidebar border-theme"
                 >
                   <div className="p-6 border-b border-zinc-800 flex items-center justify-between border-theme">
                     <h2 className="text-xl font-bold flex items-center gap-2 text-primary">
@@ -1080,7 +1279,7 @@ export default function App() {
                     {/* Me */}
                     <div className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-xl border border-zinc-700/50">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-lg" style={{ backgroundColor: profileColor }}>
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white" style={{ backgroundColor: profileColor }}>
                           {myName.charAt(0).toUpperCase()}
                         </div>
                         <div>
@@ -1098,7 +1297,7 @@ export default function App() {
                     {Object.values(participants).map((p: Participant) => (
                       <div key={p.peerId} className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-xl border border-zinc-700/50">
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-lg" style={{ backgroundColor: p.color }}>
+                          <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white" style={{ backgroundColor: p.color }}>
                             {p.name.charAt(0).toUpperCase()}
                           </div>
                           <div>

@@ -45,7 +45,7 @@
 .mirror { transform: scaleX(-1); }
 
 .chat-bubble {
-    @apply max-w-[85%] rounded-2xl p-3 text-sm break-words shadow-sm;
+    @apply max-w-[85%] rounded-2xl p-3 text-sm break-words;
 }
 .chat-mine { @apply bg-blue-600 ml-auto rounded-tr-none text-white; }
 .chat-theirs { @apply bg-zinc-700 mr-auto rounded-tl-none text-zinc-100; }
