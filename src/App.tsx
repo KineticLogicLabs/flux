@@ -176,13 +176,11 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [showTimestamps, setShowTimestamps] = useState(false);
   const [meetingDuration, setMeetingDuration] = useState(0);
-  const [soundEnabled, setSoundEnabled] = useState(true);
 
   // Temp settings for modal
   const [tempName, setTempName] = useState(myName);
   const [tempColor, setTempColor] = useState(profileColor);
   const [tempTheme, setTempTheme] = useState(theme);
-  const [tempSound, setTempSound] = useState(soundEnabled);
 
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<Record<string, DataConnection>>({});
@@ -192,40 +190,11 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Audio refs
-  const audioToggleRef = useRef<HTMLAudioElement | null>(null);
-  const audioConnectRef = useRef<HTMLAudioElement | null>(null);
-  const audioDisconnectRef = useRef<HTMLAudioElement | null>(null);
-
-  useEffect(() => {
-    // Initialize audio elements with more reliable URLs
-    audioToggleRef.current = new Audio('https://www.soundjay.com/buttons/sounds/button-16.mp3'); 
-    audioConnectRef.current = new Audio('https://www.soundjay.com/buttons/sounds/button-3.mp3'); 
-    audioDisconnectRef.current = new Audio('https://www.soundjay.com/buttons/sounds/button-10.mp3'); 
-    
-    // Preload sounds
-    [audioToggleRef, audioConnectRef, audioDisconnectRef].forEach(ref => {
-      if (ref.current) {
-        ref.current.load();
-      }
-    });
-  }, []);
-
-  const playSound = (type: 'toggle' | 'connect' | 'disconnect') => {
-    if (!soundEnabled) return;
-    const audio = type === 'toggle' ? audioToggleRef.current : type === 'connect' ? audioConnectRef.current : audioDisconnectRef.current;
-    if (audio) {
-      audio.currentTime = 0;
-      audio.play().catch(() => {});
-    }
-  };
-
   useEffect(() => {
     if (inCall) {
       timerRef.current = setInterval(() => {
         setMeetingDuration(prev => prev + 1);
       }, 1000);
-      playSound('connect');
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       setMeetingDuration(0);
@@ -352,7 +321,6 @@ export default function App() {
       delete next[peerId];
       return next;
     });
-    playSound('disconnect');
   };
 
   const connectToPeer = (targetId: string, stream: MediaStream | null) => {
@@ -532,7 +500,6 @@ export default function App() {
       broadcast({ type: 'end-meeting' });
     }
     
-    playSound('disconnect');
     localStream?.getTracks().forEach(track => track.stop());
     peerRef.current?.destroy();
     
@@ -555,7 +522,6 @@ export default function App() {
       track.enabled = !track.enabled;
       setMicActive(track.enabled);
       sendStatusUpdate(track.enabled, vidActive);
-      playSound('toggle');
     } else {
       setError("Microphone is not available.");
       setTimeout(() => setError(null), 3000);
@@ -568,7 +534,6 @@ export default function App() {
       track.enabled = !track.enabled;
       setVidActive(track.enabled);
       sendStatusUpdate(micActive, track.enabled);
-      playSound('toggle');
     } else {
       setError("Camera is not available.");
       setTimeout(() => setError(null), 3000);
@@ -851,10 +816,10 @@ export default function App() {
 
           <footer className="h-24 bg-zinc-950 border-t border-zinc-800 flex items-center px-6 bg-footer border-theme relative z-30">
             <div className="flex items-center gap-4 mx-auto w-full max-w-5xl justify-center relative">
-              <div className="relative flex items-center">
+              <div className="relative flex items-center group">
                 <button 
                   onClick={toggleMic}
-                  className={`control-btn rounded-r-none border-r-0 ${!micActive ? 'active-off' : ''} ${isSpacePressed ? 'ring-2 ring-blue-500' : ''}`}
+                  className={`control-btn ${!micActive ? 'active-off' : ''} ${isSpacePressed ? 'ring-2 ring-blue-500' : ''}`}
                   title={isSpacePressed ? "Muted (Space held)" : "Toggle Microphone"}
                 >
                   {micActive ? <Mic /> : <MicOff />}
@@ -864,9 +829,9 @@ export default function App() {
                     setShowAudioList(!showAudioList);
                     setShowVideoList(false);
                   }}
-                  className={`control-btn rounded-l-none w-6 px-0 flex items-center justify-center ${!micActive ? 'active-off' : ''}`}
+                  className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors"
                 >
-                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAudioList ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`w-4 h-4 transition-transform ${showAudioList ? 'rotate-180' : ''}`} />
                 </button>
                 
                 <AnimatePresence>
@@ -902,10 +867,10 @@ export default function App() {
                 </AnimatePresence>
               </div>
 
-              <div className="relative flex items-center">
+              <div className="relative flex items-center group">
                 <button 
                   onClick={toggleVideo}
-                  className={`control-btn rounded-r-none border-r-0 ${!vidActive ? 'active-off' : ''}`}
+                  className={`control-btn ${!vidActive ? 'active-off' : ''}`}
                   title="Toggle Video"
                 >
                   {vidActive ? <Video /> : <VideoOff />}
@@ -915,9 +880,9 @@ export default function App() {
                     setShowVideoList(!showVideoList);
                     setShowAudioList(false);
                   }}
-                  className={`control-btn rounded-l-none w-6 px-0 flex items-center justify-center ${!vidActive ? 'active-off' : ''}`}
+                  className="ml-1 p-1 text-zinc-500 hover:text-white transition-colors"
                 >
-                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showVideoList ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`w-4 h-4 transition-transform ${showVideoList ? 'rotate-180' : ''}`} />
                 </button>
 
                 <AnimatePresence>
@@ -979,7 +944,6 @@ export default function App() {
                   setTempName(myName);
                   setTempColor(profileColor);
                   setTempTheme(theme);
-                  setTempSound(soundEnabled);
                   setShowSettings(true);
                 }}
                 className="control-btn"
@@ -1068,20 +1032,6 @@ export default function App() {
                         ))}
                       </div>
                     </div>
-
-                    <div className="pt-4 border-t border-zinc-800 border-theme">
-                      <button 
-                        onClick={() => setTempSound(!tempSound)}
-                        className="w-full flex items-center justify-between px-4 py-3 bg-zinc-800 rounded-xl bg-main border border-theme hover:bg-zinc-700 transition-colors"
-                      >
-                        <span className="text-sm font-medium text-primary flex items-center gap-2">
-                          Sound Effects
-                        </span>
-                        <div className={`w-10 h-5 rounded-full transition-colors relative ${tempSound ? 'bg-blue-600' : 'bg-zinc-600'}`}>
-                          <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${tempSound ? 'left-6' : 'left-1'}`} />
-                        </div>
-                      </button>
-                    </div>
                   </div>
 
                   <div className="p-6 bg-zinc-950/50 border-t border-zinc-800 bg-footer border-theme">
@@ -1090,7 +1040,6 @@ export default function App() {
                         setMyName(tempName);
                         setProfileColor(tempColor);
                         setTheme(tempTheme);
-                        setSoundEnabled(tempSound);
                         if (tempName !== myName && inCall) {
                           sendStatusUpdate(micActive, vidActive, tempName);
                         }
